@@ -13,10 +13,7 @@ class ModelSelector(object):
     base class for model selection (strategy design pattern)
     '''
 
-    def __init__(self, all_word_sequences: dict, all_word_Xlengths: dict, this_word: str,
-                 n_constant=3,
-                 min_n_components=2, max_n_components=10,
-                 random_state=14, verbose=False):
+    def __init__(self,all_word_sequences:dict,all_word_Xlengths:dict, this_word:str,n_constant=3,min_n_components=2, max_n_components=10,random_state=14, verbose=False):
         self.words = all_word_sequences
         self.hwords = all_word_Xlengths
         self.sequences = all_word_sequences[this_word]
@@ -36,8 +33,7 @@ class ModelSelector(object):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
         # warnings.filterwarnings("ignore", category=RuntimeWarning)
         try:
-            hmm_model = GaussianHMM(n_components=num_states, covariance_type="diag", n_iter=1000,
-                                    random_state=self.random_state, verbose=False).fit(self.X, self.lengths)
+            hmm_model = GaussianHMM(n_components=num_states, covariance_type="diag", n_iter=1000,random_state=self.random_state, verbose=False).fit(self.X, self.lengths)
             if self.verbose:
                 print("model created for {} with {} states".format(self.this_word, num_states))
             return hmm_model
@@ -63,26 +59,55 @@ class SelectorConstant(ModelSelector):
 
 class SelectorBIC(ModelSelector):
     """ select the model with the lowest Baysian Information Criterion(BIC) score
-
     http://www2.imm.dtu.dk/courses/02433/doc/ch6_slides.pdf
     Bayesian information criteria: BIC = -2 * logL + p * logN
     """
 
     def select(self):
         """ select the best model for self.this_word based on
-        BIC score for n between self.min_n_components and self.max_n_components
+        BIC score for n between self.min_n_components and self.max_n_components+1
 
         :return: GaussianHMM object
         """
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
         # TODO implement model selection based on BIC scores
+
+        '''
+        lp = likelyhood propability
+        '''
+        lp = {}
+
+        for num_components in range(self.min_n_components, self.max_n_components+1, 1):
+            "n represents number of HMM states"
+            n = num_components
+
+
+            "d represents number of features"
+            d = len(self.X[0])
+
+            """
+            p represents the number of free parameters in BIC
+            p = number of probabilities in transition matrix + number of Gaussian variance
+            """
+            p = np.power(n,2) + 2*d*n -1
+
+
+            try:
+                lp[num_components] = -2 * self.base_model(num_components).score(self.X, self.lengths) + p * np.log(len(self.X))
+            except:
+                continue
+
+        if  lp:
+            return self.base_model(min(lp, key=lp.get))
+        else:
+            return  None
+
         raise NotImplementedError
 
 
 class SelectorDIC(ModelSelector):
     ''' select best model based on Discriminative Information Criterion
-
     Biem, Alain. "A model selection criterion for classification: Application to hmm topology optimization."
     Document Analysis and Recognition, 2003. Proceedings. Seventh International Conference on. IEEE, 2003.
     http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.58.6208&rep=rep1&type=pdf
@@ -93,6 +118,60 @@ class SelectorDIC(ModelSelector):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
         # TODO implement model selection based on DIC scores
+
+        '''
+        lp = likelyhood propability
+        alp = average antilikelyhood propabilities
+        reference_dictionary_anti_propabilities  = A reference to look up scores for anti-propabilities. Speeds up computational speed
+        '''
+
+        reference_dictionary_anti_propabilities = [{}]
+        try:
+            reference_dictionary_anti_propabilities = np.load('./reference_dictionary_anti_propabilities.npy')
+
+
+        except:
+            for num_components in range(self.min_n_components, self.max_n_components + 1, 1):
+                for word in self.words:
+                    str_ = '{}_{}'.format(num_components, word)
+                    try:
+                        X, lengths = self.hwords[word]
+                        reference_dictionary_anti_propabilities[0][str_] = self.base_model(num_components).score(X,lengths)
+                    except:
+                        reference_dictionary_anti_propabilities[0][str_] = 0
+            np.save('./reference_dictionary_anti_propabilities.npy', reference_dictionary_anti_propabilities )
+
+
+
+
+        dic_scores = {}
+        for num_components in range(self.min_n_components,self.max_n_components+1,1):
+            try:
+                lp = self.base_model(num_components).score(self.X, self.lengths)
+                alp = 0
+                for word in self.words:
+                    if word is not self.this_word:
+                        X,lengths = self.hwords[word]
+                        try:
+                            alp += reference_dictionary_anti_propabilities[0]['{}_{}'.format(num_components, word )]
+                        except:
+                            continue
+            except:
+                continue
+            """
+            DIC = log(P(X(i)) - 1/(M-1)SUM(log(P(X(all but i))
+            log(P(X(i)) = Loglikelyhood of given word
+            1/(M-1)SUM(log(P(X(all but i)) = average sum of Loglikelyhood of all other words
+            """
+
+            dic_scores[num_components] = lp - ((1 / (len(self.words) - 1)) * alp)
+
+        if  dic_scores:
+            return self.base_model(max(dic_scores, key=dic_scores.get))
+        else:
+            return  None
+
+
         raise NotImplementedError
 
 
@@ -105,4 +184,35 @@ class SelectorCV(ModelSelector):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
         # TODO implement model selection using CV
+
+        '''
+        lp = likelyhood propability
+        '''
+
+        split_method = KFold(2)
+        lp = {}
+        for num_components in range(self.min_n_components,self.max_n_components+1,1):
+            lp_n_components =[]
+            try:
+                for cv_train_idx, cv_test_idx in split_method.split(self.sequences):
+                    X, lengths = combine_sequences(cv_test_idx, self.sequences)
+                    try:
+                        lp_n_components.append(self.base_model(num_components).score(X, lengths))
+                    except:
+                        continue
+            except:
+                try:
+                    lp_n_components.append(self.base_model(3).score(self.X, self.lengths))
+                except:
+                    continue
+
+            if lp_n_components:
+                lp[num_components] = np.sum(lp_n_components) / len(lp_n_components)
+
+        if  lp:
+            return self.base_model(max(lp, key=lp.get))
+        else:
+            return  None
+
         raise NotImplementedError
+
